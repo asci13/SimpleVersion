@@ -43,6 +43,11 @@ namespace SimpleVersion.Model
         public int Height { get; set; } = 0;
 
         /// <summary>
+        /// Gets or sets the calculated height for the current branch.
+        /// </summary>
+        public int BranchHeight { get; set; } = 0;
+
+        /// <summary>
         /// Gets the height as a 0 padded four digit string.
         /// </summary>
         public string HeightPadded => Height.ToString("D4", System.Globalization.CultureInfo.CurrentCulture);

@@ -28,24 +28,35 @@ namespace SimpleVersion.Pipeline
             if (!(context is VersionContext repoContext))
                 throw new InvalidCastException($"Could not convert given context to {typeof(VersionContext)}");
 
-            var config = GetConfiguration(repoContext.Repository.Head?.Tip, repoContext)
-                        ?? throw new InvalidOperationException($"Could not read '{Constants.VersionFileName}', has it been committed?");
+            var config = ResolveConfiguration(repoContext.Repository.Head?.Tip, repoContext.Result.CanonicalBranchName);
 
             context.Configuration = config;
 
-            PopulateHeight(repoContext);
+            var (height, branchHeight) = ResolveHeight(repoContext.Repository, config, repoContext.Result.CanonicalBranchName);
+
+            context.Result.Height = height;
+            context.Result.BranchHeight = branchHeight;
         }
 
-        private void PopulateHeight(VersionContext context)
+        private static SVM.Configuration ResolveConfiguration(Commit commit, string canonicalBranch)
         {
-            // Get the state of this tree to compare for diffs
-            var tipTree = context.Repository.Head.Tip.Tree;
+            return GetConfiguration(commit, canonicalBranch)
+                        ?? throw new InvalidOperationException($"Could not read '{Constants.VersionFileName}', has it been committed?");
+        }
 
+        private (int Height, int BranchHeight) ResolveHeight(IRepository repository, SVM.Configuration config, string canonicalBranch)
+        {
             // Initialise count - The current commit counts, include offset
-            var height = 1 + context.Configuration.OffSet;
+            var branchHeight = 1 + config.OffSet;
+            var height = 1 + config.OffSet;
 
-            // skip the first commit as that is our baseline
-            var commits = GetReachableCommits(context.Repository).Skip(1).GetEnumerator();
+            var isResultBranch = config.Branches.Release.Any(p => Regex.IsMatch(canonicalBranch, p));
+
+            // get the commits reachable from the current branch
+            var commits = GetReachableCommits(repository, canonicalBranch).Skip(1).GetEnumerator();
+
+            // Get the state of this tree to compare for diffs
+            var tipTree = repository.Head.Tip.Tree;
 
             while (commits.MoveNext())
             {
@@ -53,63 +64,111 @@ namespace SimpleVersion.Pipeline
                 var next = commits.Current.Tree;
 
                 // Perform a diff
-                var diff = context.Repository.Diff.Compare<TreeChanges>(next, tipTree);
+                var diff = repository.Diff.Compare<TreeChanges>(next, tipTree);
 
                 // If a change to the file is found, stop counting
-                if (HasVersionChange(diff, commits.Current, context))
+                if (HasVersionChange(diff, commits.Current, config, canonicalBranch))
                     break;
 
-                // Increment height
-                height++;
+                if (isResultBranch)
+                {
+                    // Increment both heights
+                    height++;
+                    branchHeight++;
+                }
+                else
+                {
+                    // Check to see if parent is a merge
+                    if (commits.Current.Parents.Count() > 1)
+                    {
+                        var shouldBreak = false;
+                        foreach (var commit in commits.Current.Parents)
+                        {
+                            if (IsInReleaseBranch(repository, config, commit, out var parent))
+                            {
+                                shouldBreak = true;
+                                var parentConfig = ResolveConfiguration(commits.Current, parent.CanonicalName);
+                                var (_, parentBaseHeight) = ResolveHeight(repository, config, parent.CanonicalName);
+                                height += parentBaseHeight;
+                                break;
+                            }
+                        }
+
+                        if (shouldBreak) break;
+                    }
+                    else
+                    {
+                        // If not a merge then release commits on directly on this branch
+                        if (IsInReleaseBranch(repository, config, commits.Current, out var _))
+                            height++;
+                        else
+                            branchHeight++;
+                    }
+                }
             }
 
-            context.Result.Height = height;
+            if (isResultBranch)
+            {
+                height = branchHeight;
+            }
+
+            return (height, branchHeight);
         }
 
         private static bool HasVersionChange(
             TreeChanges diff,
             Commit commit,
-            VersionContext context)
+            SVM.Configuration config,
+            string canonicalBranch)
         {
             if (diff.Any(d => d.Path == Constants.VersionFileName))
             {
-                var commitConfig = GetConfiguration(commit, context);
-                return commitConfig != null && !_comparer.Equals(context.Configuration, commitConfig);
+                var commitConfig = GetConfiguration(commit, canonicalBranch);
+                return commitConfig != null && !_comparer.Equals(config, commitConfig);
             }
 
             return false;
         }
 
-        private static IEnumerable<Commit> GetReachableCommits(IRepository repo)
+        private static IEnumerable<Commit> GetReachableCommits(IRepository repo, string canonicalBranch)
         {
             var filter = new CommitFilter
             {
                 FirstParentOnly = true,
-                IncludeReachableFrom = repo.Head,
+                IncludeReachableFrom = canonicalBranch,
                 SortBy = CommitSortStrategies.Reverse
             };
 
             return repo.Commits.QueryBy(filter).Reverse();
         }
 
-        private static SVM.Configuration GetConfiguration(Commit commit, VersionContext context)
+        private static bool IsInReleaseBranch(IRepository repository, SVM.Configuration config, Commit commit, out Reference branch)
+        {
+            branch = repository.Refs
+                .ReachableFrom(new[] { commit })
+                .FirstOrDefault(x => x.IsReleaseBranch(config.Branches.Release));
+
+            return branch != null;
+        }
+
+        private static SVM.Configuration GetConfiguration(Commit commit, string canonicalBranch)
         {
             var gitObj = commit?.Tree[Constants.VersionFileName]?.Target;
             if (gitObj == null)
                 return null;
 
             var config = Read((gitObj as Blob).GetContentText());
-            ApplyConfigOverrides(config, context);
+            ApplyConfigOverrides(config, canonicalBranch);
             return config;
         }
 
-        private static void ApplyConfigOverrides(SVM.Configuration config, VersionContext context)
+        private static void ApplyConfigOverrides(SVM.Configuration config, string canonicalBranch)
         {
             if (config == null)
                 return;
 
             var firstMatch = config.Branches
-                .Overrides.FirstOrDefault(x => Regex.IsMatch(context.Result.CanonicalBranchName, x.Match, RegexOptions.IgnoreCase));
+                .Overrides.FirstOrDefault(x => Regex.IsMatch(canonicalBranch, x.Match, RegexOptions.IgnoreCase));
 
             if (firstMatch != null)
             {

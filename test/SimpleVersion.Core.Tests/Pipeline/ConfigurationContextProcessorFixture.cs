@@ -356,6 +356,8 @@ namespace SimpleVersion.Core.Tests.Pipeline
             using (var fixture = new SimpleVersionRepositoryFixture())
             {
                 // Arrange
+                var baseConfig = fixture.GetConfig();
+
                 fixture.MakeACommit();
                 fixture.MakeACommit();
                 fixture.MakeACommit();
@@ -376,8 +378,7 @@ namespace SimpleVersion.Core.Tests.Pipeline
                 fixture.MakeACommit(); // 7
                 fixture.MakeACommit(); // 8
 
-                var config = new Configuration { Version = "0.1.0" };
-                fixture.SetConfig(config);
+                fixture.SetConfig(baseConfig);
 
                 var context = new VersionContext(fixture.Repository);
 
