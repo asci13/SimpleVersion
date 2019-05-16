@@ -388,5 +388,187 @@ namespace SimpleVersion.Core.Tests.Pipeline
                 context.Result.Height.Should().Be(9);
             }
         }
+
+        [Fact]
+        public void Apply_NonRelease_Branch_Descends_From_Release_Branch_Sets_CorrectHeights()
+        {
+            var config = new Configuration
+            {
+                Version = "1.0.0",
+                Branches =
+                {
+                    Release =
+                    {
+                        "^refs/heads/master$",
+                    }
+                }
+            };
+
+            using (var fixture = new SimpleVersionRepositoryFixture(config))
+            using (EnvrionmentContext.NoBuildServer())
+            {
+                // Make some extra commits on master
+                fixture.MakeACommit();
+                fixture.MakeACommit();
+                fixture.MakeACommit();
+
+                // branch to a feature branch
+                fixture.BranchTo("feature/testing");
+                fixture.MakeACommit();
+                fixture.MakeACommit();
+                fixture.MakeACommit();
+
+                var context = new VersionContext(fixture.Repository);
+
+                // Act
+                _sut.Apply(context);
+
+                // Assert
+                context.Result.Height.Should().Be(5, "Master has four commits, and is then incremented by one");
+                context.Result.BranchHeight.Should().Be(3, "feature has 3 unique commits");
+            }
+        }
+
+        [Fact]
+        public void Apply_Release_Branch_Has_NonRelease_Branch_Merged()
+        {
+            var config = new Configuration
+            {
+                Version = "1.0.0",
+                Branches =
+                {
+                    Release =
+                    {
+                        "^refs/heads/master$"
+                    }
+                }
+            };
+
+            using (var fixture = new SimpleVersionRepositoryFixture(config))
+            using (EnvrionmentContext.NoBuildServer())
+            {
+                // Make some extra commits on master
+                fixture.MakeACommit();
+                fixture.MakeACommit();
+                fixture.MakeACommit();
+
+                // branch to a feature branch
+                fixture.BranchTo("feature/testing");
+                fixture.MakeACommit();
+                fixture.MakeACommit();
+                fixture.MakeACommit();
+
+                // Merge back to master
+                fixture.Checkout("master");
+                fixture.MergeNoFF("feature/testing");
+
+                var context = new VersionContext(fixture.Repository);
+
+                // Act
+                _sut.Apply(context);
+
+                // Assert
+                context.Result.Height.Should().Be(5, "Master has five unique commits");
+                context.Result.BranchHeight.Should().Be(5, "Release branch height is same as height");
+            }
+        }
+
+        [Fact]
+        public void Apply_Release_Branch_Commmits()
+        {
+            var config = new Configuration
+            {
+                Version = "1.0.0",
+                Branches =
+                {
+                    Release =
+                    {
+                        "^refs/heads/master$",
+                        "^refs/heads/release/.+$",
+                    }
+                }
+            };
+
+            using (var fixture = new SimpleVersionRepositoryFixture(config))
+            using (EnvrionmentContext.NoBuildServer())
+            {
+                // Make some extra commits on master
+                fixture.MakeACommit();
+                fixture.MakeACommit();
+                fixture.MakeACommit();
+
+                // branch to a release branch
+                fixture.BranchTo("release/1.0");
+                fixture.MakeACommit();
+                fixture.MakeACommit();
+                fixture.MakeACommit();
+
+                var context = new VersionContext(fixture.Repository);
+
+                // Act
+                _sut.Apply(context);
+
+                // Assert
+                context.Result.Height.Should().Be(7, "Release branch counts all unique commits since change");
+                context.Result.BranchHeight.Should().Be(7, "Release branch height is same as height");
+            }
+        }
+
+        [Fact]
+        public void Master_Feature_Preview_Unique()
+        {
+            var config = new Configuration
+            {
+                Version = "1.0.0",
+                Branches =
+                {
+                    Release =
+                    {
+                        "^refs/heads/master$",
+                        "^refs/heads/preview/.+$",
+                    }
+                }
+            };
+
+            using (var fixture = new SimpleVersionRepositoryFixture(config))
+            using (EnvrionmentContext.NoBuildServer())
+            {
+                // Make some extra commits on master
+                fixture.MakeACommit();
+                fixture.MakeACommit();
+                fixture.MakeACommit();
+
+                // branch to a preview branch
+                fixture.BranchTo("preview/1.1");
+                fixture.MakeACommit();
+                fixture.MakeACommit();
+                fixture.MakeACommit();
+                fixture.MakeACommit();
+                fixture.MakeACommit();
+                fixture.MakeACommit();
+
+                // start a feature from master
+                fixture.Checkout("master");
+                fixture.BranchTo("feature/testing");
+                fixture.MakeACommit();
+                fixture.MakeACommit();
+                fixture.MakeACommit();
+
+                // merge preview changes into feature
+                fixture.MergeNoFF("preview/1.1");
+                fixture.MakeACommit();
+                fixture.MakeACommit();
+                fixture.MakeACommit();
+
+                var context = new VersionContext(fixture.Repository);
+
+                // Act
+                _sut.Apply(context);
+
+                // Assert
+                context.Result.Height.Should().Be(11, "Release branch counts all unique commits since change on the release branche(s)");
+                context.Result.BranchHeight.Should().Be(3, "Counts number of unique commits since the last release branch was merged.");
+            }
+        }
     }
 }
